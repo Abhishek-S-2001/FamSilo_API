@@ -30,6 +30,3 @@ app.include_router(auth.router)
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Family Group API is running!"}
-
-port = int(os.environ.get("PORT", 5000))
-app.run(host="0.0.0.0", port=port)
