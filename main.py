@@ -17,7 +17,7 @@ origins = [
     "http://localhost:3000",          # Your local Next.js frontend
     "http://192.168.1.40:3000",       # Your phone on the local network
     "http://127.0.0.1:3000",
-    "https://famsilo.vercel.app",     # (Future) Your production frontend URL
+    "https://famsilo-webapp.vercel.app",     # Your production frontend URL
 ]
 
 # 2. Add the shield
