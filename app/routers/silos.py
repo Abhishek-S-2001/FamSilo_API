@@ -3,6 +3,7 @@ from pydantic import BaseModel, EmailStr
 from supabase import Client
 from typing import Optional
 import uuid
+import resend
 import secrets
 
 from app.database import get_db
@@ -78,26 +79,19 @@ def get_my_silos(db: Client = Depends(get_db), current_user_id: str = Depends(ge
         print("Error fetching silos for sidebar:", e)
         raise HTTPException(status_code=400, detail=str(e))
 
-
 # --- INVITATION SYSTEM ---
 
 def send_invitation_email(email_to: str, invite_link: str, silo_name: str):
-    """Sends a beautifully formatted HTML email using Gmail SMTP, with full UTF-8 support."""
+    """Sends a beautifully formatted HTML email using the Resend HTTP API."""
     
-    # In production, put these in your .env file!
-    gmail_user = os.getenv("GMAIL_USER", "YOUR_GMAIL@gmail.com") 
-    gmail_password = os.getenv("GMAIL_APP_PASSWORD", "your-16-char-app-password")
+    # 1. Authenticate with Resend
+    resend.api_key = os.getenv("RESEND_API_KEY") 
 
     # Clean the silo name just in case it has hidden HTML spaces
     clean_silo_name = silo_name.replace('\xa0', ' ')
 
-    msg = EmailMessage()
-    msg['Subject'] = f"You're invited to the {clean_silo_name} Vault"
-    msg['From'] = f"FamSilo <{gmail_user}>"
-    msg['To'] = email_to
-
     # Premium HTML Email matching your DESIGN.md vibe
-    html = f"""
+    html_content = f"""
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; background-color: #f7f9fb; border-radius: 20px;">
         <h2 style="color: #0434c6; font-size: 24px; margin-bottom: 8px;">FamSilo</h2>
         <p style="color: #464555; font-size: 16px; line-height: 1.6;">
@@ -113,46 +107,40 @@ def send_invitation_email(email_to: str, invite_link: str, silo_name: str):
         </p>
     </div>
     """
-    
-    # Set a plain text fallback, then add the beautiful HTML
-    msg.set_content(f"You have been invited to {clean_silo_name}. Join here: {invite_link}")
-    msg.add_alternative(html, subtype='html')
 
     try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(gmail_user, gmail_password)
-        server.send_message(msg)
-        server.quit()
-        print(f"✅ Real Email sent successfully to {email_to}!")
+        # 2. Send the email via HTTP (Bypasses the [Errno 101] port block!)
+        r = resend.Emails.send({
+            "from": "FamSilo <onboarding@resend.dev>", # See note below about this email
+            "to": email_to,
+            "subject": f"You're invited to the {clean_silo_name} Vault",
+            "html": html_content
+        })
+        print(f"✅ Email sent successfully via HTTP! ID: {r.get('id')}")
     except Exception as e:
-        print(f"❌ Failed to send email: {e}")
+        print(f"❌ Failed to send email via Resend: {e}")
 
 
 @router.post("/{silo_id}/invites")
 def invite_user_to_silo(
     silo_id: str, 
     invite: SiloInvite,
-    background_tasks: BackgroundTasks, # Allows us to send email without making the user wait
+    background_tasks: BackgroundTasks,
     db: Client = Depends(get_db), 
     current_user_id: str = Depends(get_current_user_id)
 ):
     """Generates a secure invite token and emails it to a family member."""
     
-    # 1. Verify the person sending the invite is an Admin
     admin_check = db.table("group_members").select("role").eq("group_id", silo_id).eq("user_id", current_user_id).execute()
     if not admin_check.data or admin_check.data[0].get("role") != "admin":
         raise HTTPException(status_code=403, detail="Only Silo admins can invite new members.")
 
-    # 2. Get the Silo name for the email
     silo_data = db.table("groups").select("name").eq("id", silo_id).execute()
     silo_name = silo_data.data[0].get("name") if silo_data.data else "a FamSilo"
 
-    # 3. Generate a secure, random token
     invite_token = secrets.token_urlsafe(32)
 
     try:
-        # 4. Save the token to a new database table called `silo_invites`
         db.table("silo_invites").insert({
             "silo_id": silo_id,
             "email": invite.email,
@@ -162,11 +150,11 @@ def invite_user_to_silo(
             "status": "pending"
         }).execute()
 
-        # 5. Construct the magic link (Assuming your Next.js app runs on localhost:3000 right now)
-        frontend_url = "http://localhost:3000"
+        # 🚀 CRITICAL FIX FOR VERCEL: 
+        # Since you are live, we cannot use localhost for the email link!
+        frontend_url = os.getenv("NEXT_PUBLIC_FRONTEND_URL", "https://your-famsilo-app.vercel.app") 
         invite_link = f"{frontend_url}/join?token={invite_token}"
 
-        # 6. Fire off the email in the background!
         background_tasks.add_task(send_invitation_email, invite.email, invite_link, silo_name)
 
         return {"message": f"Invitation successfully sent to {invite.email}"}
@@ -174,6 +162,7 @@ def invite_user_to_silo(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error sending invite: {str(e)}")
     
+
 
 class JoinSiloRequest(BaseModel):
     token: str

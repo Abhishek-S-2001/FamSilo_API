@@ -13,7 +13,6 @@ app = FastAPI(
 
 # 1. Define who is allowed to talk to your API
 origins = [
-    "*",
     "http://localhost:3000",          # Your local Next.js frontend
     "http://192.168.1.40:3000",       # Your phone on the local network
     "http://127.0.0.1:3000",
@@ -27,15 +26,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"], # Lock down allowed actions
     allow_headers=["Authorization", "Content-Type"], # Only allow specific headers
-)
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 # Connect the router to the app
