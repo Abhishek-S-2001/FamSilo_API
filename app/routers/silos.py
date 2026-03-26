@@ -3,7 +3,6 @@ from pydantic import BaseModel, EmailStr
 from supabase import Client
 from typing import Optional
 import uuid
-import resend
 import secrets
 
 from app.database import get_db
@@ -78,17 +77,24 @@ def get_my_silos(db: Client = Depends(get_db), current_user_id: str = Depends(ge
     except Exception as e:
         print("Error fetching silos for sidebar:", e)
         raise HTTPException(status_code=400, detail=str(e))
+    
 
 # --- INVITATION SYSTEM ---
 
 def send_invitation_email(email_to: str, invite_link: str, silo_name: str):
-    """Sends a beautifully formatted HTML email using the Resend HTTP API."""
+    """Sends a beautifully formatted HTML email using Gmail SMTP, with full UTF-8 support."""
     
-    # 1. Authenticate with Resend
-    resend.api_key = os.getenv("RESEND_API_KEY") 
+    # Grab your Gmail credentials from environment variables
+    gmail_user = os.getenv("GMAIL_USER") 
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD")
 
     # Clean the silo name just in case it has hidden HTML spaces
     clean_silo_name = silo_name.replace('\xa0', ' ')
+
+    msg = EmailMessage()
+    msg['Subject'] = f"You're invited to the {clean_silo_name} Vault"
+    msg['From'] = f"FamSilo <{gmail_user}>"
+    msg['To'] = email_to
 
     # Premium HTML Email matching your DESIGN.md vibe
     html_content = f"""
@@ -107,18 +113,22 @@ def send_invitation_email(email_to: str, invite_link: str, silo_name: str):
         </p>
     </div>
     """
+    
+    # Set a plain text fallback, then add the beautiful HTML
+    msg.set_content(f"You have been invited to {clean_silo_name}. Join here: {invite_link}")
+    msg.add_alternative(html_content, subtype='html')
 
     try:
-        # 2. Send the email via HTTP (Bypasses the [Errno 101] port block!)
-        r = resend.Emails.send({
-            "from": "FamSilo <onboarding@resend.dev>", # See note below about this email
-            "to": email_to,
-            "subject": f"You're invited to the {clean_silo_name} Vault",
-            "html": html_content
-        })
-        print(f"✅ Email sent successfully via HTTP! ID: {r.get('id')}")
+        # Connect to Gmail's SMTP server on port 587
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()  # Secure the connection
+        server.login(gmail_user, gmail_password)
+        server.send_message(msg)
+        server.quit()
+        print(f"✅ Real Email sent successfully to {email_to}!")
     except Exception as e:
-        print(f"❌ Failed to send email via Resend: {e}")
+        print(f"❌ Failed to send email via SMTP: {e}")
+
 
 
 @router.post("/{silo_id}/invites")

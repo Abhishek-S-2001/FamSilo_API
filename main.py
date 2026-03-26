@@ -13,6 +13,7 @@ app = FastAPI(
 
 # 1. Define who is allowed to talk to your API
 origins = [
+    "*"
     "http://localhost:3000",          # Your local Next.js frontend
     "http://192.168.1.40:3000",       # Your phone on the local network
     "http://127.0.0.1:3000",
