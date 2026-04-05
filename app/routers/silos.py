@@ -3,11 +3,10 @@ from pydantic import BaseModel, EmailStr
 from supabase import Client
 from typing import Optional
 import uuid
-import resend
 import secrets
 
-from app.database import get_db
-from app.dependencies import get_current_user_id
+from app.utils.database import get_db
+from app.utils.dependencies import get_current_user_id
 import smtplib
 from email.message import EmailMessage
 import os
@@ -26,6 +25,12 @@ class SiloCreate(BaseModel):
 class SiloInvite(BaseModel):
     email: EmailStr
     role: str = "member"
+
+class AppInviteRequest(BaseModel):
+    user_id: str
+
+class NotificationActionRequest(BaseModel):
+    notification_id: str
 
 # --- Endpoints ---
 @router.post("/")
@@ -78,24 +83,31 @@ def get_my_silos(db: Client = Depends(get_db), current_user_id: str = Depends(ge
     except Exception as e:
         print("Error fetching silos for sidebar:", e)
         raise HTTPException(status_code=400, detail=str(e))
+    
 
 # --- INVITATION SYSTEM ---
 
 def send_invitation_email(email_to: str, invite_link: str, silo_name: str):
-    """Sends a beautifully formatted HTML email using the Resend HTTP API."""
+    """Sends a beautifully formatted HTML email using Gmail SMTP, with full UTF-8 support."""
     
-    # 1. Authenticate with Resend
-    resend.api_key = os.getenv("RESEND_API_KEY") 
+    # Grab your Gmail credentials from environment variables
+    gmail_user = os.getenv("GMAIL_USER") 
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD")
 
     # Clean the silo name just in case it has hidden HTML spaces
     clean_silo_name = silo_name.replace('\xa0', ' ')
+
+    msg = EmailMessage()
+    msg['Subject'] = f"You're invited to the {clean_silo_name} Vault"
+    msg['From'] = f"FamSilo <{gmail_user}>"
+    msg['To'] = email_to
 
     # Premium HTML Email matching your DESIGN.md vibe
     html_content = f"""
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; background-color: #f7f9fb; border-radius: 20px;">
         <h2 style="color: #0434c6; font-size: 24px; margin-bottom: 8px;">FamSilo</h2>
         <p style="color: #464555; font-size: 16px; line-height: 1.6;">
-            You have been invited to join <strong>{clean_silo_name}</strong>—a secure, private digital heirloom for your family's most precious memories.
+            You have been invited to join <strong>{clean_silo_name}</strong>—a secure, private digital heirloom for your group's most precious memories.
         </p>
         <div style="margin: 32px 0;">
             <a href="{invite_link}" style="background-color: #0434c6; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 30px; font-weight: bold; display: inline-block;">
@@ -107,18 +119,22 @@ def send_invitation_email(email_to: str, invite_link: str, silo_name: str):
         </p>
     </div>
     """
+    
+    # Set a plain text fallback, then add the beautiful HTML
+    msg.set_content(f"You have been invited to {clean_silo_name}. Join here: {invite_link}")
+    msg.add_alternative(html_content, subtype='html')
 
     try:
-        # 2. Send the email via HTTP (Bypasses the [Errno 101] port block!)
-        r = resend.Emails.send({
-            "from": "FamSilo <onboarding@resend.dev>", # See note below about this email
-            "to": email_to,
-            "subject": f"You're invited to the {clean_silo_name} Vault",
-            "html": html_content
-        })
-        print(f"✅ Email sent successfully via HTTP! ID: {r.get('id')}")
+        # Connect to Gmail's SMTP server on port 587
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()  # Secure the connection
+        server.login(gmail_user, gmail_password)
+        server.send_message(msg)
+        server.quit()
+        print(f"✅ Real Email sent successfully to {email_to}!")
     except Exception as e:
-        print(f"❌ Failed to send email via Resend: {e}")
+        print(f"❌ Failed to send email via SMTP: {e}")
+
 
 
 @router.post("/{silo_id}/invites")
@@ -258,3 +274,106 @@ def get_silo_details(
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+# --- IN-APP NOTIFICATION INVITE FLOW ---
+
+@router.post("/{silo_id}/invite")
+def invite_user_in_app(
+    silo_id: str,
+    request: AppInviteRequest,
+    db: Client = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """Sends an in-app invite (notification) to a user to join a Silo."""
+    try:
+        # 1. Check if user already in group
+        existing = db.table("group_members").select("*").eq("group_id", silo_id).eq("user_id", request.user_id).execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail="User is already in the Silo.")
+            
+        # 2. Check if already invited (prevent spam)
+        existing_invite = db.table("notifications").select("*").eq("silo_id", silo_id).eq("user_id", request.user_id).eq("type", "silo_invite").eq("is_read", False).execute()
+        if existing_invite.data:
+            raise HTTPException(status_code=400, detail="User already has a pending invite to this Silo.")
+
+        # 3. Create Notification
+        db.table("notifications").insert({
+            "user_id": request.user_id,
+            "actor_id": current_user_id,
+            "type": "silo_invite",
+            "silo_id": silo_id,
+            "is_read": False
+        }).execute()
+
+        return {"message": "Invite sent successfully."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to send invite: {str(e)}")
+
+@router.post("/{silo_id}/accept-invite")
+def accept_in_app_invite(
+    silo_id: str,
+    request: NotificationActionRequest,
+    db: Client = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """Accepts an in-app Silo invite notification."""
+    try:
+        # 1. Verify notification
+        notif = db.table("notifications").select("*").eq("id", request.notification_id).eq("user_id", current_user_id).eq("type", "silo_invite").execute()
+        if not notif.data:
+            raise HTTPException(status_code=404, detail="Invite notification not found or does not belong to you.")
+        
+        notification_data = notif.data[0]
+        if str(notification_data.get("silo_id")) != silo_id:
+            raise HTTPException(status_code=400, detail="Silo ID mismatch.")
+
+        # 2. Check existing membership
+        existing = db.table("group_members").select("*").eq("group_id", silo_id).eq("user_id", current_user_id).execute()
+        if not existing.data:
+            # Join group
+            db.table("group_members").insert({
+                "group_id": silo_id,
+                "user_id": current_user_id,
+                "role": "member"
+            }).execute()
+
+        # 3. Mark read
+        db.table("notifications").update({"is_read": True}).eq("id", request.notification_id).execute()
+        
+        return {"message": "Invite accepted. You are now a member."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to accept invite: {str(e)}")
+
+@router.post("/{silo_id}/decline-invite")
+def decline_in_app_invite(
+    silo_id: str,
+    request: NotificationActionRequest,
+    db: Client = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """Declines an in-app Silo invite notification."""
+    try:
+        # 1. Verify notification
+        notif = db.table("notifications").select("*").eq("id", request.notification_id).eq("user_id", current_user_id).eq("type", "silo_invite").execute()
+        if not notif.data:
+            raise HTTPException(status_code=404, detail="Invite notification not found or does not belong to you.")
+            
+        notification_data = notif.data[0]
+        if str(notification_data.get("silo_id")) != silo_id:
+            raise HTTPException(status_code=400, detail="Silo ID mismatch.")
+
+        # 2. Mark read/dismissed
+        db.table("notifications").update({"is_read": True}).eq("id", request.notification_id).execute()
+        
+        return {"message": "Invite declined."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to decline invite: {str(e)}")

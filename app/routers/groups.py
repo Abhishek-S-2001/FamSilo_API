@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from supabase import Client
 from typing import Optional
-from app.database import get_db
+from app.utils.database import get_db
 
-from app.dependencies import get_current_user_id
+from app.utils.dependencies import get_current_user_id
 
 # Initialize the router
 router = APIRouter(

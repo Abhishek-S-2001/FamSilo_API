@@ -3,7 +3,7 @@ import os
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import our new router
-from app.routers import groups, posts, auth, silos, chat, users
+from app.routers import groups, posts, auth, silos, chat, users,notifications
 
 app = FastAPI(
     title="FamSilo API",
@@ -13,6 +13,7 @@ app = FastAPI(
 
 # 1. Define who is allowed to talk to your API
 origins = [
+    "*",
     "http://localhost:3000",          # Your local Next.js frontend
     "http://192.168.1.40:3000",       # Your phone on the local network
     "http://127.0.0.1:3000",
@@ -35,6 +36,7 @@ app.include_router(auth.router)
 app.include_router(silos.router)
 app.include_router(chat.router)
 app.include_router(users.router)
+app.include_router(notifications.router)
 
 
 @app.get("/")

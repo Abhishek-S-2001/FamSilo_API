@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 from typing import List, Optional
 from pydantic import BaseModel
@@ -6,8 +6,8 @@ from datetime import datetime, timezone, timedelta, date
 import base64
 import uuid
 
-from app.database import get_db
-from app.dependencies import get_current_user_id
+from app.utils.database import get_db
+from app.utils.dependencies import get_current_user_id
 
 router = APIRouter(
     prefix="/users",
@@ -158,6 +158,14 @@ def update_profile(payload: dict, db: Client = Depends(get_db), current_user_id:
         raise HTTPException(status_code=400, detail=str(e).replace("400: ", ""))
     
 
+@router.post("/me/accept-terms")
+def accept_terms(db: Client = Depends(get_db), current_user_id: str = Depends(get_current_user_id)):
+    """Marks the user as having accepted the application's terms and conditions."""
+    try:
+        db.table("profiles").update({"terms_accepted": True}).eq("id", current_user_id).execute()
+        return {"message": "Terms accepted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/me/image")
@@ -205,6 +213,59 @@ def upload_profile_image(payload: dict, db: Client = Depends(get_db), current_us
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+
+@router.get("/search")
+def search_users(
+    q: str = Query("", description="The search query"),
+    limit: int = 20, # Fetch a bit more so we can sort them properly
+    db: Client = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """Real-time search with smart relevance sorting."""
+    if not q.strip():
+        return {"users": []}
+    
+    try:
+        # 1. Fetch everyone who has these letters ANYWHERE in their name (in-between or start)
+        response = db.table("profiles")\
+            .select("id, display_name, username, avatar_url")\
+            .or_(f"username.ilike.%{q}%,display_name.ilike.%{q}%")\
+            .neq("id", current_user_id)\
+            .limit(limit)\
+            .execute()
+            
+        users = response.data
+        query_lower = q.lower()
+
+        # 2. The Upgraded Magic
+        def get_relevance_score(user):
+            name = (user.get("display_name") or "").lower()
+            uname = (user.get("username") or "").lower()
+
+            # Score 0: Absolute exact match
+            if query_lower == name or query_lower == uname:
+                return 0
+            
+            # Score 1: The very first letter of their name/username matches
+            if name.startswith(query_lower) or uname.startswith(query_lower):
+                return 1
+            
+            # Score 2: ANY word in their name starts with it (e.g. "Sa" matches "Aunt Sarah")
+            if any(word.startswith(query_lower) for word in name.split()):
+                return 2
+            
+            # Score 3: Letters are just randomly in-between (e.g. "Sa" matches "Melissa")
+            return 3
+
+        # 3. Sort using the new scoring system
+        users.sort(key=get_relevance_score)
+
+        return {"users": users}
+
+    except Exception as e:
+        return {"users": [], "error": str(e)}
+
+
 @router.get("/{target_user_id}")
 def get_public_profile(target_user_id: str, db: Client = Depends(get_db)):
     """Fetches a user's public profile and enforces their privacy toggles."""

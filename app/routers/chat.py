@@ -1,12 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from supabase import Client
 from typing import Dict, List
 from datetime import datetime
 import uuid
 import json
 
-from app.dependencies import get_current_user_id
-from app.database import get_db
+from app.utils.dependencies import get_current_user_id
+from app.utils.database import get_db
 
 router = APIRouter(
     prefix="/chat",
@@ -110,6 +110,77 @@ async def chat_endpoint(websocket: WebSocket, room_id: str, token: str, db: Clie
         manager.disconnect(websocket, room_id)
 
 
+@router.get("/search")
+def search_inbox(
+    q: str = Query("", description="The search query"),
+    limit: int = 10,
+    db: Client = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """Unified search for both Users and Silos."""
+    if not q.strip():
+        return {"results": []}
+    
+    try:
+        query_lower = q.lower()
+        results = []
+
+        # 1. Search Users (Profiles)
+        users = db.table("profiles")\
+            .select("id, display_name, username, avatar_url")\
+            .or_(f"username.ilike.%{q}%,display_name.ilike.%{q}%")\
+            .neq("id", current_user_id)\
+            .limit(limit)\
+            .execute()
+
+        for u in users.data:
+            name = u.get("display_name") or u.get("username")
+            
+            # Generate the exact DM room ID so the frontend doesn't have to guess!
+            ids = sorted([current_user_id, u["id"]])
+            dm_room_id = f"dm_{ids[0]}_{ids[1]}"
+            
+            results.append({
+                "id": dm_room_id,             # The standard Chat ID
+                "name": name,
+                "type": "dm",                 # Tells ChatItem to make it a circle avatar
+                "avatar": u.get("avatar_url"),
+                "last_message_preview": f"@{u.get('username')}" # Use this space to show their handle!
+            })
+
+        # 2. Search Silos (Groups)
+        # Assuming your table is named 'groups'. We only search groups they are a part of!
+        # Note: If you don't have a user_groups join table yet, you can just search the groups table directly for now.
+        silos = db.table("groups")\
+            .select("id, name")\
+            .ilike("name", f"%{q}%")\
+            .limit(limit)\
+            .execute()
+
+        for s in silos.data:
+            results.append({
+                "id": s["id"],                # For Silos, the ID is just the Silo ID
+                "name": s["name"],
+                "type": "group",              # Tells ChatItem to make it a square avatar
+                "avatar": None,
+                "last_message_preview": "Silo Chat"
+            })
+
+        # 3. The Relevance Sort (Works for both now!)
+        def get_relevance_score(item):
+            name = (item.get("name") or "").lower()
+            if query_lower == name: return 0
+            if any(word.startswith(query_lower) for word in name.split()): return 1
+            return 2
+
+        results.sort(key=get_relevance_score)
+
+        return {"results": results}
+
+    except Exception as e:
+        return {"results": [], "error": str(e)}
+
+
 @router.get("/{room_id}/messages")
 def get_chat_history(room_id: str, db: Client = Depends(get_db)):
     """Fetches history and automatically attaches the sender's profile info."""
@@ -205,7 +276,7 @@ def get_smart_inbox(db: Client = Depends(get_db), current_user_id: str = Depends
             for item in silos_resp.data:
                 s = item.get("groups")
                 if s:
-                    inbox.append({"id": s["id"], "name": s["name"], "type": "silo"})
+                    inbox.append({"id": s["id"], "name": s["name"], "type": "group"})
 
         # 2. GET DMs
         sent = db.table("messages").select("receiver_id").eq("user_id", current_user_id).execute()
@@ -239,7 +310,7 @@ def get_smart_inbox(db: Client = Depends(get_db), current_user_id: str = Depends
             chat["last_message_preview"] = "No messages yet"
             chat["unread_count"] = 0
 
-            if chat["type"] == "silo":
+            if chat["type"] == "group":
                 msg_resp = db.table("messages") \
                     .select("created_at, content, profiles!messages_user_id_fkey(username)") \
                     .eq("silo_id", chat["id"]) \
