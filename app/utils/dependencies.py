@@ -1,24 +1,17 @@
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import Client
 from app.utils.database import get_db
 
-# Notice we changed Header(...) to Header(None)
-def get_current_user_id(authorization: str = Header(None), db: Client = Depends(get_db)):
+# Tell Swagger UI we use standard Bearer token auth (adds the 'Authorize' button in /docs)
+security = HTTPBearer()
+
+def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security), db: Client = Depends(get_db)):
     """
     Dependency that extracts the JWT token from the header,
     verifies it with Supabase, and returns the secure user_id.
     """
-    
-    # 1. Catch missing headers completely and force a 401
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid Authorization header format. Must be 'Bearer <token>'")
-    
-    # Extract the token string
-    token = authorization.split(" ")[1]
-    
+    token = credentials.credentials
     try:
         # Ask Supabase to verify the token and get the user data
         user_response = db.auth.get_user(token)
