@@ -4,7 +4,7 @@ from supabase import Client
 from typing import Optional
 from app.utils.database import get_db
 from app.utils.dependencies import get_current_user_id
-from app.utils.moderation import moderate_text, moderate_image, moderate_video
+from app.utils.moderation import moderate_text, moderate_image, moderate_video, log_moderation_event
 
 router = APIRouter(
     prefix="/posts",
@@ -70,9 +70,11 @@ def _run_media_moderation(post_id: str, media_path: str, post_type: str, db: Cli
 
         if result.safe:
             db.table("posts").update({"moderation_status": "approved"}).eq("id", post_id).execute()
+            log_moderation_event(db, post_id, post_type, result)
         else:
             db.table("posts").update({"moderation_status": "quarantined"}).eq("id", post_id).execute()
             _move_to_quarantine(db, media_path)
+            log_moderation_event(db, post_id, post_type, result)
             print(f"[MODERATION] Post {post_id} quarantined. Flags: {result.flags}. Reason: {result.reason}")
 
     except Exception as e:

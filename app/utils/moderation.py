@@ -8,6 +8,7 @@ import os
 import json
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 from google import genai
 from google.genai import types
@@ -90,6 +91,41 @@ def _call_gemini(contents: list, timeout: int = 15) -> ModerationResult:
     except Exception as e:
         # Any API error — fail safe (pass) so posts aren't silently blocked
         return ModerationResult(safe=True, reason=f"Moderation error: {str(e)}", flags=[])
+
+
+# ── Audit Logging ─────────────────────────────────────────────────────────────
+
+def log_moderation_event(
+    db,
+    post_id: str,
+    content_type: str,
+    result: "ModerationResult",
+    reviewed_by: str = "ai",
+) -> None:
+    """
+    Write a moderation audit record to the `moderation_logs` table.
+    This is fire-and-forget — failures are swallowed to prevent any
+    interference with the moderation verdict itself.
+
+    Args:
+        db: Supabase Client instance.
+        post_id: The UUID of the post being moderated.
+        content_type: One of 'text', 'image', 'video', 'comment'.
+        result: The ModerationResult returned by the moderation function.
+        reviewed_by: 'ai' for automated decisions, or a user_id for manual overrides.
+    """
+    try:
+        db.table("moderation_logs").insert({
+            "post_id": post_id,
+            "content_type": content_type,
+            "verdict": "approved" if result.safe else "quarantined",
+            "flags": result.flags,
+            "reason": result.reason,
+            "reviewed_by": reviewed_by,
+        }).execute()
+    except Exception as e:
+        # Non-fatal — audit log failure must never block content flow
+        print(f"[MODERATION AUDIT] Failed to write log for post {post_id}: {e}")
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

@@ -68,6 +68,12 @@ The API is separated into logical routers (tags). Here is a quick cheat sheet of
 - `GET /notifications`: Get the user's notification bell feed.
 - `POST /silo-invites/...`: Send, accept, or decline Silo invitations via the notification system.
 
+### ✨ AI Agents (`/agents`)
+- `GET /agents/briefing`: Returns today's personalized AI briefing for the authenticated user, summarizing recent silo activity.
+- `POST /agents/facilitator/check/{silo_id}`: Checks if a specific silo is dormant (no posts in 24h) and automatically generates an AI engagement post if so.
+- `GET /agents/concierge/stream`: A Server-Sent Events (SSE) endpoint that streams an interactive RAG chat response grounded in the user's silo context.
+- `POST /agents/index/{silo_id}`: Admin/Internal tool to index all posts within a given silo into the `pgvector` database for AI context.
+
 ---
 
 ## 4. Understanding the JSON Schemas

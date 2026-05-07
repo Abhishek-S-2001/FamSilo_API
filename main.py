@@ -3,7 +3,7 @@ import os
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import our new router
-from app.routers import groups, posts, auth, silos, chat, users,notifications
+from app.routers import groups, posts, auth, silos, chat, users, notifications, moderation, agents
 
 app = FastAPI(
     title="FamSilo API",
@@ -37,6 +37,8 @@ app.include_router(silos.router)
 app.include_router(chat.router)
 app.include_router(users.router)
 app.include_router(notifications.router)
+app.include_router(moderation.router)
+app.include_router(agents.router)
 
 
 @app.get("/")
